@@ -4,12 +4,24 @@ const $=id=>document.getElementById(id),esc=value=>String(value??'').replace(/[&
 const num=value=>value==null?'—':Number(value).toLocaleString('zh-CN'),date=ts=>ts?new Date(ts*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'—';
 const shortDate=ts=>new Date(ts*1000).toLocaleDateString('zh-CN',{timeZone:'Asia/Shanghai',month:'numeric',day:'numeric'});
 const DAY=86400,NAMES={'huyou-school':'狐友华理圈','tieba-school':'华理贴吧','douyin':'抖音','thepaper':'澎湃','bilibili-hot-search':'B站热搜','bilibili-popular':'B站热门','toutiao':'头条','weibo':'微博','baidu':'百度'};
-const state={tab:'campus',overview:null,top:3,hot:null,memes:null,hotPlatform:'抖音',memePlatform:'B站',ledger:null,modalVersion:0,task:null,poll:null,overviewPromise:null};
+const state={tab:'campus',overview:null,top:3,hot:null,memes:null,hotPlatform:'抖音',memePlatform:'B站',ledger:null,modalVersion:0,task:null,poll:null,overviewPromise:null,identity:null};
 let noticeTimer;
 function notice(message){$('notice').textContent=message;$('notice').hidden=false;clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>$('notice').hidden=true,6500);}
 async function api(url,options={}){
  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),30000);
  try{const response=await fetch(url,{...options,signal:controller.signal,headers:{'Content-Type':'application/json',...(options.headers||{})}});if(!(response.headers.get('content-type')||'').includes('application/json'))throw Error(response.redirected?'登录已失效，请重新登录。':'服务暂时不可用，请稍后重试。');const data=await response.json();if(!response.ok||data.success===false)throw Error(data.message||data.error||'读取失败，请稍后重试。');return data;}catch(error){if(error.name==='AbortError')throw Error('请求超时，请稍后重试。');throw error;}finally{clearTimeout(timer);}
+}
+async function loadIdentity(){
+ try{
+  const identity=await api('/api/auth/me');
+  state.identity=identity;
+  const badge=$('accountBadge');
+  if(badge){badge.textContent=(identity.username||'')+' · '+(identity.role_label||'使用人员');badge.hidden=false;}
+  if(identity.is_admin)document.querySelectorAll('[data-admin-only]').forEach(el=>el.hidden=false);
+ }catch(error){
+  const badge=$('accountBadge');
+  if(badge){badge.textContent='登录状态异常';badge.hidden=false;}
+ }
 }
 const empty=text=>'<p class="empty">'+esc(text)+'</p>';
 const errorState=(text,action)=>'<div class="empty error" role="alert">'+esc(text)+(action?'<br><button data-retry="'+esc(action)+'">重新读取</button>':'')+'</div>';
@@ -107,9 +119,9 @@ async function pollTask(task){
  }catch(e){$('researchProgress').innerHTML=errorState(e.message)+'<button data-resume="'+esc(task)+'">继续查看进度</button>';$('researchSubmit').disabled=false;}
 }
 $('researchForm').addEventListener('submit',async e=>{e.preventDefault();if($('researchSubmit').disabled)return;const query=$('researchQuery').value.trim();if(!query||Array.from(query).length>500){notice('请输入1至500字的研究主题');return;}if(state.lastSubmittedQuery!==query){state.requestId=crypto.randomUUID();state.lastSubmittedQuery=query;}$('researchSubmit').disabled=true;try{const d=await api('/pulse/api/revision/research',{method:'POST',body:JSON.stringify({query,request_id:state.requestId})});localStorage.setItem('ecust-active-research-v2',d.task_id);pollTask(d.task_id);}catch(error){notice(error.message);$('researchSubmit').disabled=false;}});
-$('collectButton').onclick=async()=>{const b=$('collectButton');b.disabled=true;try{await api('/pulse/api/collect',{method:'POST',body:'{}'});notice('采集任务已提交，完成后可刷新页面查看。');}catch(e){notice(e.message);}finally{b.disabled=false;}};
+const collectButton=$('collectButton');if(collectButton)collectButton.onclick=async()=>{const b=collectButton;b.disabled=true;try{await api('/pulse/api/collect',{method:'POST',body:'{}'});notice('采集任务已提交，完成后可刷新页面查看。');}catch(e){notice(e.message);}finally{b.disabled=false;}};
 async function config(){try{const d=await api('/api/config'),c=d.config;const engines=[['QUERY','查询引擎'],['MEDIA','媒体引擎'],['INSIGHT','洞察引擎'],['REPORT','报告引擎'],['FORUM_HOST','讨论汇总']];$('configFields').innerHTML=engines.map(([id,label])=>{const prefix=id==='FORUM_HOST'?id:id+'_ENGINE';return '<section class="config-engine"><h3>'+label+'</h3>'+[['BASE_URL','接口地址'],['MODEL_NAME','模型名称'],['API_KEY','密钥']].map(([suffix,name])=>{const key=prefix+'_'+suffix;return '<label>'+name+'<input name="'+key+'" type="'+(suffix==='API_KEY'?'password':'text')+'" value="'+(suffix==='API_KEY'?'':esc(c[key]||''))+'" autocomplete="off" placeholder="'+(suffix==='API_KEY'?'留空沿用当前密钥':'')+'"></label>';}).join('')+'</section>';}).join('')+'<section class="config-engine"><h3>网页检索</h3><label>博查检索密钥<input name="BOCHA_WEB_SEARCH_API_KEY" type="password" autocomplete="off" placeholder="留空沿用当前密钥"></label></section>';$('configDialog').showModal();}catch(e){notice(e.message);}}
-$('configButton').onclick=config;$('configForm').onsubmit=async e=>{e.preventDefault();const fields=Object.fromEntries(new FormData(e.target).entries()),updates=Object.fromEntries(Object.entries(fields).filter(([k,v])=>!k.endsWith('API_KEY')||v.trim()));try{await api('/api/config',{method:'POST',body:JSON.stringify(updates)});$('configStatus').textContent='配置已保存';}catch(error){$('configStatus').textContent=error.message;}};
+const configButton=$('configButton');if(configButton)configButton.onclick=config;const configForm=$('configForm');if(configForm)configForm.onsubmit=async e=>{e.preventDefault();const fields=Object.fromEntries(new FormData(e.target).entries()),updates=Object.fromEntries(Object.entries(fields).filter(([k,v])=>!k.endsWith('API_KEY')||v.trim()));try{await api('/api/config',{method:'POST',body:JSON.stringify(updates)});$('configStatus').textContent='配置已保存';}catch(error){$('configStatus').textContent=error.message;}};
 document.addEventListener('click',e=>{
  const b=e.target.closest('button,[role="button"]');if(!b)return;
  if(b.classList.contains('close-dialog')){b.closest('dialog').close();return;}
@@ -136,5 +148,5 @@ setInterval(async()=>{
 },120000);
 $('practicePosts').onclick=async()=>{try{const data=await overview();openPosts({red:'1',from:data.generated_at-7*DAY},'红色育人观察 · 实践原帖');}catch(e){notice(e.message);}};$('carePosts').onclick=openCare;
 $('refreshReports').onclick=loadReports;$('refreshLedger').onclick=()=>loadLedger(true).catch(e=>notice(e.message));
-activate(location.hash.slice(1)||'campus');loadCare();try{const active=localStorage.getItem('ecust-active-research-v2');if(active)pollTask(active);}catch{}
+loadIdentity().finally(()=>activate(location.hash.slice(1)||'campus'));loadCare();try{const active=localStorage.getItem('ecust-active-research-v2');if(active)pollTask(active);}catch{}
 })();
