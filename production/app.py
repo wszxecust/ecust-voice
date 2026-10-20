@@ -45,6 +45,16 @@ from utils.task_runtime import (
     task_has_any_account,
     register_task_workspace,
 )
+from authz import (
+    ROLE_ADMIN,
+    ROLE_USER,
+    admin_required,
+    authenticate_account,
+    authenticated_required,
+    current_role,
+    current_username,
+    role_label,
+)
 
 # 导入ReportEngine
 try:
@@ -91,28 +101,16 @@ def login():
     if request.method == 'POST':
         supplied_username = request.form.get('username', '')
         supplied_password = request.form.get('password', '')
-        accounts = {
-            os.getenv('WEB_AUTH_USERNAME', ''): os.getenv('WEB_AUTH_PASSWORD', '')
-        }
-        try:
-            additional_accounts = json.loads(os.getenv('WEB_AUTH_ACCOUNTS', '{}'))
-            if isinstance(additional_accounts, dict):
-                accounts.update({
-                    str(username): str(password)
-                    for username, password in additional_accounts.items()
-                })
-        except json.JSONDecodeError:
-            logger.error('WEB_AUTH_ACCOUNTS 格式无效，已忽略附加账号配置')
-
-        expected_password = accounts.get(supplied_username, '')
-        credentials_configured = any(username and password for username, password in accounts.items())
-        if credentials_configured and expected_password and hmac.compare_digest(
-            supplied_password, expected_password
-        ):
+        role, credentials_configured = authenticate_account(
+            supplied_username,
+            supplied_password,
+        )
+        if role:
             session.clear()
             session.permanent = True
             session['authenticated'] = True
             session['username'] = supplied_username
+            session['role'] = role
             return redirect(next_url)
         error = '用户名或密码错误'
         if not credentials_configured:
@@ -133,6 +131,20 @@ def auth_check():
     if session.get('authenticated') is True:
         return ('', 204)
     return ('', 401)
+
+
+@app.route('/api/auth/me')
+@authenticated_required
+def auth_me():
+    """Return the current signed-in identity without exposing credentials."""
+    role = current_role()
+    return jsonify({
+        'success': True,
+        'username': current_username(),
+        'role': role,
+        'role_label': role_label(role),
+        'is_admin': role == ROLE_ADMIN,
+    })
 
 # eventlet 在客户端主动断开时偶尔会抛出 ConnectionAbortedError，这里做一次防御性包裹，
 # 避免无意义的堆栈污染日志（仅在 eventlet 可用时启用）。
@@ -266,6 +278,15 @@ def _load_config_module():
     except ModuleNotFoundError:
         return None
     return module
+
+
+def _public_config_values(values):
+    """Never send saved secrets back to the browser, including for admins."""
+    sensitive = {'DB_PASSWORD'} | {key for key in CONFIG_KEYS if key.endswith('API_KEY')}
+    return {
+        key: ('' if key in sensitive else value)
+        for key, value in values.items()
+    }
 
 
 def read_config_values():
@@ -989,7 +1010,14 @@ atexit.register(cleanup_processes)
 @app.route('/')
 def index():
     """主页：先加载task隔离bootstrap，再执行旧版页面脚本。"""
-    html = render_template('index.html')
+    role = current_role()
+    html = render_template(
+        'index.html',
+        current_username=current_username(),
+        current_role=role,
+        current_role_label=role_label(role),
+        is_admin=role == ROLE_ADMIN,
+    )
     bootstrap = (
         '<script src="/static/task_isolation.js"></script>'
         '<script src="/static/task_sidebar.js" defer></script>'
@@ -1014,6 +1042,7 @@ def get_status():
     })
 
 @app.route('/api/start/<app_name>')
+@admin_required
 def start_app(app_name):
     """启动指定应用"""
     if app_name not in processes:
@@ -1047,6 +1076,7 @@ def start_app(app_name):
     return jsonify({'success': success, 'message': message})
 
 @app.route('/api/stop/<app_name>')
+@admin_required
 def stop_app(app_name):
     """停止指定应用"""
     if app_name not in processes:
@@ -1268,6 +1298,7 @@ def get_output(app_name):
 
 
 @app.route('/api/test_log/<app_name>')
+@admin_required
 def test_log(app_name):
     """向指定task写入测试日志。"""
     if app_name not in processes:
@@ -1290,6 +1321,7 @@ def test_log(app_name):
 
 
 @app.route('/api/forum/start')
+@admin_required
 def start_forum_monitoring_api():
     start_forum_engine()
     processes['forum']['status'] = 'running'
@@ -1297,6 +1329,7 @@ def start_forum_monitoring_api():
 
 
 @app.route('/api/forum/stop')
+@admin_required
 def stop_forum_monitoring_api():
     stop_forum_engine()
     processes['forum']['status'] = 'stopped'
@@ -1432,6 +1465,7 @@ def search():
 
 
 @app.route('/api/fetch_models', methods=['POST'])
+@admin_required
 def fetch_models():
     """Fetch live model list from an OpenAI-compatible provider."""
     import requests
@@ -1517,6 +1551,7 @@ def fetch_models():
 
 
 @app.route('/api/test_model', methods=['POST'])
+@admin_required
 def test_model_connection():
     from CampusPulse.model_connection import probe
     payload=request.get_json(silent=True) or {}
@@ -1527,10 +1562,11 @@ def test_model_connection():
 
 
 @app.route('/api/config', methods=['GET'])
+@admin_required
 def get_config():
     """Expose selected configuration values to the frontend."""
     try:
-        config_values = read_config_values()
+        config_values = _public_config_values(read_config_values())
         return jsonify({'success': True, 'config': config_values})
     except Exception as exc:
         logger.exception("读取配置失败")
@@ -1538,6 +1574,7 @@ def get_config():
 
 
 @app.route('/api/config', methods=['POST'])
+@admin_required
 def update_config():
     """Update configuration values and persist them to config.py."""
     payload = request.get_json(silent=True) or {}
@@ -1556,7 +1593,7 @@ def update_config():
         write_config_values(updates)
         from CampusPulse.config import refresh_runtime
         refresh_runtime()
-        updated_config = read_config_values()
+        updated_config = _public_config_values(read_config_values())
         return jsonify({'success': True, 'config': updated_config})
     except Exception as exc:
         logger.exception("更新配置失败")
@@ -1575,6 +1612,7 @@ def get_system_status():
 
 
 @app.route('/api/system/start', methods=['POST'])
+@admin_required
 def start_system():
     """在接收到请求后启动完整系统。"""
     allowed, message = _prepare_system_start()
@@ -1602,6 +1640,7 @@ def start_system():
         _set_system_state(starting=False)
 
 @app.route('/api/system/shutdown', methods=['POST'])
+@admin_required
 def shutdown_system():
     """优雅停止所有组件并关闭当前服务进程。"""
     state = _get_system_state()
