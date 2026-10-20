@@ -13,6 +13,7 @@ from pathlib import Path
 
 from flask import Blueprint, jsonify, redirect, request, send_from_directory, session, Response, send_file
 
+from authz import admin_required, require_roles_response, ROLE_ADMIN
 from . import pipeline, storage
 from .agents import analysis_options, router, workflows, workers
 from .agents.orchestrator import Orchestrator
@@ -243,6 +244,7 @@ def export_activity_plan(plan_id: int):
 
 
 @pulse_bp.route("/api/meme-feedback", methods=["POST"])
+@admin_required
 def api_meme_feedback():
     """梗候选人工快捷标注：确认流行 / 不是梗 / 过时词 / 普通词 / 重复候选；用于过滤与精筛提示。"""
     from . import memes
@@ -261,6 +263,7 @@ def api_meme_feedback():
 
 
 @pulse_bp.route("/api/metrics")
+@admin_required
 def api_metrics():
     """运行监控：最近批次各阶段耗时、模型调用 / token / 失败、缓存命中率；分析任务成本。"""
     from . import metrics
@@ -294,6 +297,7 @@ _VOTE_LIMIT_PER_HOUR = 20
 
 
 @pulse_bp.route("/api/polls", methods=["GET", "POST"])
+@admin_required
 def api_polls():
     if request.method == "GET":
         return jsonify({"success": True, "polls": storage.list_polls()})
@@ -311,6 +315,7 @@ def api_polls():
 
 
 @pulse_bp.route("/api/polls/<token>/close", methods=["POST"])
+@admin_required
 def api_poll_close(token: str):
     storage.close_poll(token)
     return jsonify({"success": True})
@@ -382,6 +387,7 @@ def poll_vote(token: str):
 
 
 @pulse_bp.route("/api/settings", methods=["GET", "POST"])
+@admin_required
 def api_settings():
     if request.method == "POST":
         body = request.get_json(silent=True) or {}
@@ -403,6 +409,7 @@ def api_topic_history(topic_id: int):
 
 
 @pulse_bp.route("/api/collect", methods=["POST"])
+@admin_required
 def api_collect():
     if pipeline.status()["running"]:
         return jsonify({"success": False, "message": "采集正在进行中"})
@@ -488,6 +495,7 @@ def api_analysis(analysis_id: int):
 
 
 @pulse_bp.route("/api/review", methods=["POST"])
+@admin_required
 def api_review():
     """教师复核：待复核草稿 / AI 验证稿 → 教师已复核（活动方案可执行，写入梗词典）或驳回。"""
     body = request.get_json(silent=True) or {}
@@ -634,6 +642,7 @@ def api_auto_report_export(report_id):
                     headers={'Content-Disposition':f'attachment; filename="campus-report-{report_id}.md"'})
 
 @pulse_bp.route('/api/cost-pricing', methods=['GET','POST'])
+@admin_required
 def api_cost_pricing():
     from . import costs
     if request.method == 'POST':
@@ -650,8 +659,11 @@ def api_cost_pricing():
 
 def _issue_access(write=False):
     if not _username():
-        return jsonify(success=False,message='请先登录教师账号'),401
+        return jsonify(success=False,message='请先登录'),401
     if write:
+        denied = require_roles_response(ROLE_ADMIN)
+        if denied is not None:
+            return denied
         from urllib.parse import urlsplit
         origin = request.headers.get('Origin')
         try:
