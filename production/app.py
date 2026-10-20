@@ -146,6 +146,24 @@ def auth_me():
         'is_admin': role == ROLE_ADMIN,
     })
 
+
+_PUBLIC_PATHS = {'/login', '/api/auth/check'}
+_PUBLIC_PREFIXES = ('/static/', '/pulse/poll/')
+
+
+@app.before_request
+def enforce_flask_login():
+    """Do not rely on Nginx alone: protect direct Flask access too."""
+    path = request.path or '/'
+    if path in _PUBLIC_PATHS or any(path.startswith(prefix) for prefix in _PUBLIC_PREFIXES):
+        return None
+    if session.get('authenticated') is True and current_username():
+        return None
+    if path.startswith('/api/') or path.startswith('/pulse/api/'):
+        return jsonify(success=False, message='请先登录'), 401
+    return redirect(url_for('login', next=_safe_next_url(request.full_path.rstrip('?'))))
+
+
 # eventlet 在客户端主动断开时偶尔会抛出 ConnectionAbortedError，这里做一次防御性包裹，
 # 避免无意义的堆栈污染日志（仅在 eventlet 可用时启用）。
 def _patch_eventlet_disconnect_logging():
@@ -1287,6 +1305,12 @@ def get_output(app_name):
         return jsonify({'success': False, 'message': str(exc)}), 400
     if not task_id:
         return jsonify({'success': False, 'message': '缺少task_id'}), 400
+    try:
+        workspace_id = _workspace_id_from_request()
+    except ValueError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+    if not _task_visible(task_id, workspace_id, _current_account()):
+        return jsonify({'success': False, 'message': '任务不存在或当前账号无权访问'}), 404
 
     output_lines = read_log_from_file(app_name, task_id=task_id)
     return jsonify({
@@ -1345,6 +1369,12 @@ def get_forum_log():
         return jsonify({'success': False, 'message': str(exc)}), 400
     if not task_id:
         return jsonify({'success': False, 'message': '缺少task_id'}), 400
+    try:
+        workspace_id = _workspace_id_from_request()
+    except ValueError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+    if not _task_visible(task_id, workspace_id, _current_account()):
+        return jsonify({'success': False, 'message': '任务不存在或当前账号无权访问'}), 404
 
     try:
         events = list_events(task_id, limit=5000)
@@ -1373,6 +1403,12 @@ def get_forum_log_history():
         return jsonify({'success': False, 'message': str(exc)}), 400
     if not task_id:
         return jsonify({'success': False, 'message': '缺少task_id'}), 400
+    try:
+        workspace_id = _workspace_id_from_request(data)
+    except ValueError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+    if not _task_visible(task_id, workspace_id, _current_account()):
+        return jsonify({'success': False, 'message': '任务不存在或当前账号无权访问'}), 404
 
     start_position = max(0, int(data.get('position', 0) or 0))
     max_lines = max(1, min(int(data.get('max_lines', 1000) or 1000), 5000))
@@ -1685,6 +1721,8 @@ def shutdown_system():
 @socketio.on('connect')
 def handle_connect(auth=None):
     """每个浏览器tab加入独立client room，避免跨设备/跨tab广播。"""
+    if session.get('authenticated') is not True or not current_username():
+        return False
     auth = auth if isinstance(auth, dict) else {}
     raw_client_id = auth.get('client_id') or request.args.get('client_id')
     if raw_client_id:
@@ -1708,6 +1746,9 @@ def handle_subscribe_task(data=None):
                 leave_room(_task_room(str(previous_task_id)))
             except ValueError:
                 pass
+        if not _task_visible(task_id, None, _current_account()):
+            emit('task_subscription', {'success': False, 'message': '任务不存在或当前账号无权访问'})
+            return
         join_room(_task_room(task_id))
         emit('task_subscription', {'success': True, 'task_id': task_id})
     except ValueError as exc:
