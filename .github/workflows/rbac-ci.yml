@@ -33,3 +33,24 @@ jobs:
 
       - name: Check frontend JavaScript syntax
         run: node --check static/js/campus-review.js
+
+      - name: Set up Python 3.13 for local offline bundle
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Build exact branch snapshot and offline wheels
+        working-directory: .
+        run: |
+          git archive --format=zip --output=ecust-voice-chatgpt-work.zip HEAD
+          mkdir -p wheelhouse
+          python -m pip download --dest wheelhouse flask pytest
+
+      - name: Upload local verification bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: rbac-local-bundle
+          path: |
+            ecust-voice-chatgpt-work.zip
+            wheelhouse/
+          retention-days: 1
