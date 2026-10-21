@@ -1077,8 +1077,7 @@ def download_report(task_id: str):
 def cancel_task(task_id: str):
     """取消一个report task，不影响其他research/report任务。"""
     try:
-        with task_lock:
-            task = _report_task_for_current_account(task_id)
+        task = _report_task_for_current_account(task_id)
         if not task:
             return jsonify({'success': False, 'error': '任务不存在或无权访问'}), 404
         if task.status in STREAM_TERMINAL_STATUSES:
@@ -1318,6 +1317,14 @@ def export_pdf(task_id: str):
         Response: PDF文件流或错误信息
     """
     try:
+        # 先校验任务归属，再执行依赖检查或读取任何报告元数据。
+        task = _report_task_for_current_account(task_id)
+        if not task:
+            return jsonify({
+                'success': False,
+                'error': '任务不存在或无权访问'
+            }), 404
+
         # 检测 Pango 依赖
         from .utils.dependency_check import check_pango_available
         pango_available, pango_message = check_pango_available()
@@ -1329,14 +1336,6 @@ def export_pdf(task_id: str):
                 'help_url': 'https://github.com/666ghj/BettaFish#2-安装-pdf-导出所需系统依赖可选',
                 'system_message': pango_message
             }), 503
-
-        # 获取任务信息
-        task = _report_task_for_current_account(task_id)
-        if not task:
-            return jsonify({
-                'success': False,
-                'error': '任务不存在或无权访问'
-            }), 404
 
         # 检查任务是否完成
         if task.status != 'completed':
