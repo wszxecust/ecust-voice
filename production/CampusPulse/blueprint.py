@@ -62,6 +62,7 @@ def pulse_page():
 
 
 @pulse_bp.route("/api/status")
+@admin_required
 def api_status():
     from .config import refresh_runtime
     refresh_runtime()
@@ -470,6 +471,7 @@ def api_analyze():
 
 
 @pulse_bp.route("/api/job/<job_id>")
+@admin_required
 def api_job(job_id: str):
     job = _jobs.get(job_id)
     if not job:
@@ -478,11 +480,13 @@ def api_job(job_id: str):
 
 
 @pulse_bp.route("/api/analyses")
+@admin_required
 def api_analyses():
     return jsonify({"success": True, "items": storage.recent_analyses()})
 
 
 @pulse_bp.route("/api/analysis/<int:analysis_id>")
+@admin_required
 def api_analysis(analysis_id: int):
     row = storage.get_analysis(analysis_id)
     if not row:
@@ -533,6 +537,7 @@ def api_feedback():
 
 
 @pulse_bp.route("/api/workflows")
+@admin_required
 def api_workflows():
     return jsonify({"success": True, "items": workflows.leaderboard()})
 
@@ -613,18 +618,21 @@ def api_observatory_posts():
 
 
 @pulse_bp.route('/api/dashboard')
+@admin_required
 def api_dashboard():
     from . import telemetry,auto_reports
     return jsonify({**telemetry.dashboard(),'schedule':auto_reports.scheduler_status()})
 
 
 @pulse_bp.route('/api/auto-reports')
+@admin_required
 def api_auto_reports():
     from . import auto_reports
     return jsonify(success=True,items=auto_reports.recent(),schedule=auto_reports.scheduler_status())
 
 
 @pulse_bp.route('/api/auto-reports/<int:report_id>')
+@admin_required
 def api_auto_report(report_id):
     from . import auto_reports
     row = auto_reports.get(report_id)
@@ -632,6 +640,7 @@ def api_auto_report(report_id):
 
 
 @pulse_bp.route('/api/auto-reports/<int:report_id>/export')
+@admin_required
 def api_auto_report_export(report_id):
     from . import auto_reports
     from flask import Response
