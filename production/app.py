@@ -234,6 +234,7 @@ except Exception as e:
 
 
 @app.route('/api/search/stats', methods=['GET'])
+@admin_required
 def search_gateway_stats():
     """检索网关统计：各任务博查调用 / 缓存命中 / 仅用本地来源次数，及官网索引规模。"""
     from utils import campus_index, search_gateway
@@ -1053,6 +1054,7 @@ def index():
     return Response(html, mimetype='text/html')
 
 @app.route('/api/status')
+@admin_required
 def get_status():
     """获取所有应用状态"""
     check_app_status()
@@ -1065,7 +1067,7 @@ def get_status():
         for app_name, info in processes.items()
     })
 
-@app.route('/api/start/<app_name>')
+@app.route('/api/start/<app_name>', methods=['POST'])
 @admin_required
 def start_app(app_name):
     """启动指定应用"""
@@ -1099,7 +1101,7 @@ def start_app(app_name):
     
     return jsonify({'success': success, 'message': message})
 
-@app.route('/api/stop/<app_name>')
+@app.route('/api/stop/<app_name>', methods=['POST'])
 @admin_required
 def stop_app(app_name):
     """停止指定应用"""
@@ -1350,7 +1352,7 @@ def test_log(app_name):
     return jsonify({'success': True, 'task_id': task_id, 'message': '测试消息已写入task日志'})
 
 
-@app.route('/api/forum/start')
+@app.route('/api/forum/start', methods=['POST'])
 @admin_required
 def start_forum_monitoring_api():
     start_forum_engine()
@@ -1358,7 +1360,7 @@ def start_forum_monitoring_api():
     return jsonify({'success': True, 'message': 'task-scoped Forum服务已就绪'})
 
 
-@app.route('/api/forum/stop')
+@app.route('/api/forum/stop', methods=['POST'])
 @admin_required
 def stop_forum_monitoring_api():
     stop_forum_engine()
@@ -1643,6 +1645,7 @@ def update_config():
 
 
 @app.route('/api/system/status')
+@admin_required
 def get_system_status():
     """返回系统启动状态。"""
     state = _get_system_state()
