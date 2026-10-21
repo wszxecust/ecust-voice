@@ -55,6 +55,8 @@ from authz import (
     current_username,
     is_internal_request,
     role_label,
+    session_is_valid,
+    session_version_for_username,
 )
 
 # 导入ReportEngine
@@ -112,6 +114,7 @@ def login():
             session['authenticated'] = True
             session['username'] = supplied_username
             session['role'] = role
+            session['auth_version'] = session_version_for_username(supplied_username)
             return redirect(next_url)
         error = '用户名或密码错误'
         if not credentials_configured:
@@ -129,7 +132,7 @@ def logout():
 @app.route('/api/auth/check')
 def auth_check():
     """Lightweight endpoint called internally by Nginx for every request."""
-    if session.get('authenticated') is True:
+    if session_is_valid():
         return ('', 204)
     return ('', 401)
 
@@ -160,7 +163,7 @@ def enforce_flask_login():
         return None
     if path == '/api/report/generate' and is_internal_request():
         return None
-    if session.get('authenticated') is True and current_username():
+    if session_is_valid() and current_username():
         return None
     if path.startswith('/api/') or path.startswith('/pulse/api/'):
         return jsonify(success=False, message='请先登录'), 401
