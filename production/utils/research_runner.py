@@ -250,9 +250,14 @@ def maybe_trigger_report(task_id: str, query: str = "", force: bool = False) -> 
 
     for attempt in range(5):
         try:
-            resp = requests.post(f"http://127.0.0.1:{port}/api/report/generate",
-                                 json={"research_task_id": task_id, "query": query, "regenerate": force},
-                                 timeout=30)
+            internal_token = str(os.environ.get("BETTAFISH_INTERNAL_TOKEN") or "")
+            headers = {"X-BettaFish-Internal-Token": internal_token} if internal_token else {}
+            resp = requests.post(
+                f"http://127.0.0.1:{port}/api/report/generate",
+                json={"research_task_id": task_id, "query": query, "regenerate": force},
+                headers=headers,
+                timeout=30,
+            )
             if resp.status_code in (200, 409):
                 logger.info(f"[ResearchRunner] task={task_id} 已触发报告生成: {resp.status_code}")
                 return "triggered" if resp.status_code == 200 else "running"
