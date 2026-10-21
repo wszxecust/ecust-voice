@@ -149,3 +149,11 @@ def test_frontend_admin_controls_are_role_gated():
         assert 'hidden' in html
     assert "/api/auth/me" in js
     assert "identity.is_admin" in js
+
+
+
+def test_deployment_ports_do_not_bypass_authentication_proxy():
+    for relative in ("docker-compose.yml", "../host-deployment/docker-compose.yml"):
+        compose = (ROOT / relative).resolve().read_text(encoding="utf-8")
+        for port in ("5000", "8501", "8502", "8503"):
+            assert f'127.0.0.1:{port}:{port}' in compose, (relative, port)
