@@ -9,6 +9,7 @@ Account configuration remains backward compatible with the existing environment 
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import os
@@ -127,30 +128,52 @@ def authenticate_account(username: str, password: str) -> Tuple[Optional[str], b
     return None, configured
 
 
-def role_for_username(username: str) -> str:
+def role_for_username(username: str) -> Optional[str]:
     record = load_accounts().get(str(username or ""))
-    return normalize_role((record or {}).get("role"), ROLE_USER)
+    if not record or not str(record.get("password") or ""):
+        return None
+    return normalize_role(record.get("role"), ROLE_USER)
+
+
+def session_version_for_username(username: str) -> Optional[str]:
+    """Fingerprint current account credentials/role without exposing the password."""
+    record = load_accounts().get(str(username or ""))
+    if not record:
+        return None
+    password = str(record.get("password") or "")
+    if not password:
+        return None
+    role = normalize_role(record.get("role"), ROLE_USER)
+    material = f"{username}\0{password}\0{role}".encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
+def session_is_valid() -> bool:
+    if session.get("authenticated") is not True:
+        return False
+    username = str(session.get("username") or "")
+    supplied_version = str(session.get("auth_version") or "")
+    expected_version = session_version_for_username(username)
+    return bool(
+        username
+        and supplied_version
+        and expected_version
+        and hmac.compare_digest(supplied_version, expected_version)
+    )
 
 
 def current_role() -> Optional[str]:
-    if session.get("authenticated") is not True:
+    if not session_is_valid():
         return None
-    cached = str(session.get("role") or "").strip().lower()
-    if cached in VALID_ROLES:
-        return cached
-
     username = str(session.get("username") or "")
-    if not username:
-        return None
-
-    # Supports sessions issued immediately before the RBAC deployment.
     role = role_for_username(username)
-    session["role"] = role
+    if role:
+        session["role"] = role
     return role
 
 
 def current_username() -> str:
-    if session.get("authenticated") is not True:
+    if not session_is_valid():
         return ""
     return str(session.get("username") or "")
 
@@ -176,7 +199,7 @@ def role_label(role: Optional[str]) -> str:
 
 def require_roles_response(*allowed_roles: str):
     """Return None when allowed, otherwise a JSON (response, status) tuple."""
-    if session.get("authenticated") is not True or not current_username():
+    if not session_is_valid() or not current_username():
         return jsonify(success=False, message="请先登录"), 401
 
     role = current_role()
