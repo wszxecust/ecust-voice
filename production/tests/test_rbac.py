@@ -58,7 +58,8 @@ def test_role_override_wins(monkeypatch):
     assert role == authz.ROLE_ADMIN
 
 
-def test_admin_required_rejects_user():
+def test_admin_required_rejects_user(monkeypatch):
+    monkeypatch.setenv("WEB_AUTH_ACCOUNTS", '{"user":{"password":"pw","role":"user"}}')
     app = Flask(__name__)
     app.secret_key = "test"
 
@@ -67,18 +68,21 @@ def test_admin_required_rejects_user():
     def admin_endpoint():
         return jsonify(success=True)
 
+    app.config["TESTING"] = True
     with app.test_client() as client:
         with client.session_transaction() as sess:
             sess["authenticated"] = True
             sess["username"] = "user"
             sess["role"] = "user"
+            sess["auth_version"] = authz.session_version_for_username("user")
         response = client.get("/admin")
 
     assert response.status_code == 403
     assert response.get_json()["success"] is False
 
 
-def test_admin_required_allows_admin():
+def test_admin_required_allows_admin(monkeypatch):
+    monkeypatch.setenv("WEB_AUTH_ACCOUNTS", '{"admin":{"password":"pw","role":"admin"}}')
     app = Flask(__name__)
     app.secret_key = "test"
 
@@ -87,12 +91,47 @@ def test_admin_required_allows_admin():
     def admin_endpoint():
         return jsonify(success=True)
 
+    app.config["TESTING"] = True
     with app.test_client() as client:
         with client.session_transaction() as sess:
             sess["authenticated"] = True
             sess["username"] = "admin"
             sess["role"] = "admin"
+            sess["auth_version"] = authz.session_version_for_username("admin")
         response = client.get("/admin")
 
     assert response.status_code == 200
     assert response.get_json()["success"] is True
+
+
+
+def test_password_change_revokes_existing_session(monkeypatch):
+    monkeypatch.setenv("WEB_AUTH_ACCOUNTS", '{"alice":{"password":"old","role":"user"}}')
+    app = Flask(__name__)
+    app.secret_key = "test"
+
+    with app.test_request_context("/"):
+        session["authenticated"] = True
+        session["username"] = "alice"
+        session["role"] = "user"
+        session["auth_version"] = authz.session_version_for_username("alice")
+        assert authz.session_is_valid() is True
+
+        monkeypatch.setenv("WEB_AUTH_ACCOUNTS", '{"alice":{"password":"new","role":"user"}}')
+        assert authz.session_is_valid() is False
+
+
+def test_role_change_revokes_existing_session(monkeypatch):
+    monkeypatch.setenv("WEB_AUTH_ACCOUNTS", '{"alice":{"password":"pw","role":"admin"}}')
+    app = Flask(__name__)
+    app.secret_key = "test"
+
+    with app.test_request_context("/"):
+        session["authenticated"] = True
+        session["username"] = "alice"
+        session["role"] = "admin"
+        session["auth_version"] = authz.session_version_for_username("alice")
+        assert authz.session_is_valid() is True
+
+        monkeypatch.setenv("WEB_AUTH_ACCOUNTS", '{"alice":{"password":"pw","role":"user"}}')
+        assert authz.session_is_valid() is False
