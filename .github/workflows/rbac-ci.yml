@@ -1,0 +1,35 @@
+name: RBAC verification
+
+on:
+  push:
+    branches:
+      - chatgpt/work-20261020
+  workflow_dispatch:
+
+jobs:
+  rbac:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install RBAC test dependencies
+        run: python -m pip install --upgrade pip flask pytest
+
+      - name: Compile changed Python modules
+        run: |
+          python -m py_compile             authz.py             app.py             CampusPulse/blueprint.py             ReportEngine/flask_interface.py             utils/research_runner.py
+
+      - name: Run RBAC unit tests
+        run: pytest -q tests/test_rbac.py
+
+      - name: Check frontend JavaScript syntax
+        run: node --check static/js/campus-review.js
