@@ -53,6 +53,7 @@ from authz import (
     authenticated_required,
     current_role,
     current_username,
+    is_internal_request,
     role_label,
 )
 
@@ -156,6 +157,8 @@ def enforce_flask_login():
     """Do not rely on Nginx alone: protect direct Flask access too."""
     path = request.path or '/'
     if path in _PUBLIC_PATHS or any(path.startswith(prefix) for prefix in _PUBLIC_PREFIXES):
+        return None
+    if path == '/api/report/generate' and is_internal_request():
         return None
     if session.get('authenticated') is True and current_username():
         return None
