@@ -12,10 +12,11 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import secrets
 from functools import wraps
 from typing import Dict, Optional, Tuple
 
-from flask import jsonify, session
+from flask import jsonify, request, session
 
 
 ROLE_ADMIN = "admin"
@@ -25,6 +26,10 @@ ROLE_LABELS = {
     ROLE_ADMIN: "管理员",
     ROLE_USER: "使用人员",
 }
+
+_INTERNAL_TOKEN_ENV = "BETTAFISH_INTERNAL_TOKEN"
+if not os.getenv(_INTERNAL_TOKEN_ENV):
+    os.environ[_INTERNAL_TOKEN_ENV] = secrets.token_urlsafe(32)
 
 
 def normalize_role(value, default: str = ROLE_USER) -> str:
@@ -148,6 +153,21 @@ def current_username() -> str:
     if session.get("authenticated") is not True:
         return ""
     return str(session.get("username") or "")
+
+
+def is_internal_request() -> bool:
+    """Authenticate a same-host service-to-service HTTP request.
+
+    A random token is generated once in the Flask parent process and inherited by
+    child workers. The token is required in addition to a loopback source address,
+    so an external request forwarded by a reverse proxy cannot use this bypass.
+    """
+    supplied = str(request.headers.get("X-BettaFish-Internal-Token") or "")
+    expected = str(os.getenv(_INTERNAL_TOKEN_ENV) or "")
+    remote = str(request.remote_addr or "")
+    if remote not in {"127.0.0.1", "::1"} or not supplied or not expected:
+        return False
+    return hmac.compare_digest(supplied, expected)
 
 
 def role_label(role: Optional[str]) -> str:
