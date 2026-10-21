@@ -19,6 +19,7 @@ from queue import Queue, Empty
 from flask import Blueprint, request, jsonify, Response, send_file, stream_with_context
 from typing import Dict, Any, List, Optional
 from loguru import logger
+from authz import current_username, is_internal_request
 from .agent import ReportAgent, create_agent
 from .nodes import ChapterJsonParseError
 from .utils.config import settings
@@ -29,6 +30,7 @@ from utils.task_runtime import (
     task_log_context,
     task_log_path,
     task_output_dir,
+    task_has_account,
     validate_runtime_id,
 )
 
@@ -212,6 +214,21 @@ def _get_task(task_id: str) -> Optional['ReportTask']:
     """
     with task_lock:
         return tasks_registry.get(task_id)
+
+
+def _can_access_research_task(research_task_id: str) -> bool:
+    """Internal report generation or the owning signed-in account may access a research task."""
+    if is_internal_request():
+        return True
+    username = current_username()
+    return bool(username and task_has_account(research_task_id, username))
+
+
+def _report_task_for_current_account(task_id: str) -> Optional['ReportTask']:
+    task = _get_task(task_id)
+    if not task or not _can_access_research_task(task.research_task_id):
+        return None
+    return task
 
 
 def _restore_report_from_disk(research_task_id: str) -> Optional['ReportTask']:
@@ -661,6 +678,8 @@ def get_status():
     try:
         raw_task_id = request.args.get('task_id') or request.args.get('research_task_id')
         research_task_id = validate_runtime_id(raw_task_id) if raw_task_id else None
+        if research_task_id and not _can_access_research_task(research_task_id):
+            return jsonify({'success': False, 'error': '研究任务不存在或无权访问'}), 404
         engines_status = check_engines_ready(research_task_id)
         visible_current = _latest_report_task_for_research(research_task_id)
         return jsonify({
@@ -692,6 +711,8 @@ def generate_report():
         if not raw_research_task_id:
             return jsonify({'success': False, 'error': '缺少research_task_id'}), 400
         research_task_id = validate_runtime_id(str(raw_research_task_id))
+        if not _can_access_research_task(research_task_id):
+            return jsonify({'success': False, 'error': '研究任务不存在或无权访问'}), 404
         client_id = data.get('client_id')
         if client_id:
             client_id = validate_runtime_id(str(client_id), 'client_id')
@@ -797,24 +818,9 @@ def get_progress(task_id: str):
         Response: JSON包含任务当前状态。
     """
     try:
-        task = _get_task(task_id)
+        task = _report_task_for_current_account(task_id)
         if not task:
-            # 如果任务不存在，可能是历史记录已被清理，回传一个完成态兜底
-            return jsonify({
-                'success': True,
-                'task': {
-                    'task_id': task_id,
-                    'status': 'completed',
-                    'progress': 100,
-                    'error_message': '',
-                    'has_result': True,
-                    'report_file_ready': False,
-                    'report_file_name': '',
-                    'report_file_path': '',
-                    'state_file_ready': False,
-                    'state_file_path': ''
-                }
-            })
+            return jsonify({'success': False, 'error': '任务不存在或无权访问'}), 404
 
         return jsonify({
             'success': True,
@@ -844,9 +850,9 @@ def stream_task(task_id: str):
     返回:
         Response: `text/event-stream` 类型响应。
     """
-    task = _get_task(task_id)
+    task = _report_task_for_current_account(task_id)
     if not task:
-        return jsonify({'success': False, 'error': '任务不存在'}), 404
+        return jsonify({'success': False, 'error': '任务不存在或无权访问'}), 404
 
     last_event_header = request.headers.get('Last-Event-ID')
     try:
@@ -961,11 +967,11 @@ def get_result(task_id: str):
         Response: JSON，包含HTML预览与文件路径。
     """
     try:
-        task = _get_task(task_id)
+        task = _report_task_for_current_account(task_id)
         if not task:
             return jsonify({
                 'success': False,
-                'error': '任务不存在'
+                'error': '任务不存在或无权访问'
             }), 404
 
         if task.status != "completed":
@@ -992,11 +998,11 @@ def get_result(task_id: str):
 def get_result_json(task_id: str):
     """获取报告生成结果（JSON格式）"""
     try:
-        task = _get_task(task_id)
+        task = _report_task_for_current_account(task_id)
         if not task:
             return jsonify({
                 'success': False,
-                'error': '任务不存在'
+                'error': '任务不存在或无权访问'
             }), 404
 
         if task.status != "completed":
@@ -1032,11 +1038,11 @@ def download_report(task_id: str):
         Response: HTML文件的附件下载响应。
     """
     try:
-        task = _get_task(task_id)
+        task = _report_task_for_current_account(task_id)
         if not task:
             return jsonify({
                 'success': False,
-                'error': '任务不存在'
+                'error': '任务不存在或无权访问'
             }), 404
 
         if task.status != "completed" or not task.report_file_path:
@@ -1072,9 +1078,9 @@ def cancel_task(task_id: str):
     """取消一个report task，不影响其他research/report任务。"""
     try:
         with task_lock:
-            task = tasks_registry.get(task_id)
+            task = _report_task_for_current_account(task_id)
         if not task:
-            return jsonify({'success': False, 'error': '任务不存在'}), 404
+            return jsonify({'success': False, 'error': '任务不存在或无权访问'}), 404
         if task.status in STREAM_TERMINAL_STATUSES:
             return jsonify({
                 'success': task.status == 'cancelled',
@@ -1178,6 +1184,8 @@ def get_report_log():
         if not raw_task_id:
             return jsonify({'success': False, 'error': '缺少research_task_id'}), 400
         research_task_id = validate_runtime_id(str(raw_task_id))
+        if not _can_access_research_task(research_task_id):
+            return jsonify({'success': False, 'error': '研究任务不存在或无权访问'}), 404
         log_file = task_log_path(research_task_id, "report")
         if not log_file.exists():
             return jsonify({'success': True, 'research_task_id': research_task_id, 'log_lines': []})
@@ -1211,6 +1219,8 @@ def clear_log():
         return jsonify({'success': False, 'error': '缺少research_task_id'}), 400
     try:
         research_task_id = validate_runtime_id(str(raw_task_id))
+        if not _can_access_research_task(research_task_id):
+            return jsonify({'success': False, 'error': '研究任务不存在或无权访问'}), 404
         clear_report_log(research_task_id)
         return jsonify({
             'success': True,
@@ -1232,11 +1242,11 @@ def export_markdown(task_id: str):
     基于已保存的 Document IR 调用 MarkdownRenderer，生成文件并返回下载。
     """
     try:
-        task = tasks_registry.get(task_id)
+        task = _report_task_for_current_account(task_id)
         if not task:
             return jsonify({
                 'success': False,
-                'error': '任务不存在'
+                'error': '任务不存在或无权访问'
             }), 404
 
         if task.status != 'completed':
@@ -1321,11 +1331,11 @@ def export_pdf(task_id: str):
             }), 503
 
         # 获取任务信息
-        task = tasks_registry.get(task_id)
+        task = _report_task_for_current_account(task_id)
         if not task:
             return jsonify({
                 'success': False,
-                'error': '任务不存在'
+                'error': '任务不存在或无权访问'
             }), 404
 
         # 检查任务是否完成
